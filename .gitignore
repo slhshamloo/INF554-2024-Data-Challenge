@@ -1,1 +1,10 @@
 data/**
+.venv/**
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/*.pdf
+report/*.fdb_latexmk
+report/*.fls
