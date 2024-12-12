@@ -1,0 +1,141 @@
+\documentclass[twocolumn]{article}
+\usepackage{amsmath,empheq,hyperref}
+\usepackage[justification=centering]{caption}
+\usepackage[column=O]{cellspace}
+\hypersetup{colorlinks=true, urlcolor=cyan}
+
+\title{Subevent Detection in Soccer Matches from Tweets}
+\author{Saleh Shamloo Ahmadi, Adama Koïta, Enzo Gelas}
+\date{December 10, 2024}
+
+\begin{document}
+\maketitle
+\section{Data Processing and Feature Extraction}
+\subsection{Models trained on Embedding}
+Our data processing pipline is as follows:
+\begin{enumerate}
+    \item \textbf{Remove duplicate tweets (retweets).} Examining the data set, mostly the
+        promotional tweets were retweeted a lot, and there is no benefit in repeating the
+        information in relevant retweets.
+    \item \textbf{Remove all characters except for the hashtag character, the ampersand, the dollar
+        sign, and emojis.} We did not remove all characters, since some of them convey meaning. For
+        the GloVe embedding, since the emoji embeddings were sparse, we just removed every
+        punctuation.
+    \item \text{Lowercase letters.} Cased analysis in this case is not important, as we are mostly
+        dealing with sentiments and not semantics.
+    \item \textbf{Do \emph{not} remove any stopwords.} This always reduced accuracy.
+    \item \textbf{Generate word embeddings.} We use both our own custom FastText embedding and a
+        GloVe embedding trained on tweets. We only use a 100-dimensional embedding, as more
+        dimensions do not improve the accuracy.
+\end{enumerate}
+
+We used two different word embeddings:
+\begin{enumerate}
+    \item \textbf{An unsupervised FastText\cite{bojanowski2016enriching} model trained by
+        ourselves.} We used all the available text of the tweets from the dataset for this step.
+        A more rigorous model might be trained on tweets from more tweets related to football
+        matches. Using the FastText model has the advantage of not needing any lemmatization or
+        splitting of words, since it uses ngrams to extract subword-level meaning.
+    \item \textbf{A GloVe\cite{pennington2014glove} model trained on tweets.} Since we again did
+        not do any lemmatization, since this decreased the accuracy of our model significantly.
+\end{enumerate}
+
+We extracted these features:
+\begin{enumerate}
+    \item \textbf{Mean embedding vector (normalized by FastText) of the tweets of each time period,
+        minus the mean embedding vector of the match.} Removing the background noise of each match
+        was crucial to achieving higher accuracy, and gave the biggest accuracy boost to our model.
+    \item \textbf{Standard deviation of the embedding vectors of each time period, minus the mean
+        standard deviation of the match's embedding vectors.} This helps indicate when a time period
+        has more noisy data and there is less confidence about the meaning of the embedding vector.
+    \item \textbf{The mean embedding vectors of the previous and next time period's tweets.} This
+        helps add some information about the time evolution of the tweets.
+    \item \textbf{The ratio of the number of tweets in each time period to the number of tweets in
+        the match.} This is a good-enough feature for training a model on its own, and it helps
+        with the accuracy of our model too.
+\end{enumerate}
+
+Another very important step in processing the data is to split into different matches for
+cross-validation, not individual tweets. Mixing tweets from different matches causes leakage from
+the validation set into the training set, overfitting the models.
+
+\subsection{LLM Tweet Classifiers}
+For training Large Language Models (LLMs) on the dataset, we chose to classify each tweet seperately
+and later predict the subevent classification from the confidence of tweet classification of each
+model. We also tried concatenating all words of each time period and train a model on the embedding
+obtained from that, but this proved to be ineffective. We also tried training our own attention
+model, but this proved even more ineffective.
+
+\subsection{Word Frequencies Model}
+For training a more simplistic word frequency model, we extracted the frequency of these words in
+the dataset: \texttt{[`win', `lose', `draw', `goal', `red', `yellow', `penalty', `foul', `offfside',
+`corner', `free', `kick', `score', `assist', `pass', `tackle']}. These were chosen after a word
+frequency analysis on the dataset. We chose from the most frequent words, the ones that seemed to
+be more relevant to the task. For this model, we did apply a lemmtizer to find verbs and plurals
+too.
+
+\section{Model Choice, Tuning, and Comparison}
+\subsection{Model Choice}
+For the word embeddings, doing preliminary analysis (i.e. no hyperparameter tuning), it was apparent
+that tree boosting models produced the best results. Among these models, we decided to use XGBoost
+\cite{chen2016xgboost} as it is the most flexible of these models and that the preliminary analysis
+showed tree models achieve similar accuracies before tuning.
+
+For the LLM tweet classifier, we chose DistilBERT \cite{sanh2020distilbert} as training the full
+BERT model proved too resource-intensive. After producing the classification confidence output, we
+trained an XGBoost model on the output.
+
+We also trained a graph-of-words model inspired by Meladianos \textit{et al.} (2018)
+\cite{meladianos2018subevent}. However, we could not produce a model with the same accuracy.
+
+For the word frequencies, we trained two decision tree classifiers based on these criteria:
+\begin{enumerate}
+    \item Number of tweets with the words in them divided by the number of all tweets.
+    \item Number of word occurances divided by the number of tweets.
+\end{enumerate}
+To improve the performance further, we also normalized by the word frequencies per match.
+This model did not show future potential, so we abandoned it before using a more complex classifier
+to train it. We left it as a baseline.
+
+\subsection{Tuning}
+For the XGBoost model, we tuned the hyperparameters in batches that are affected by each other:
+\begin{enumerate}
+    \item \texttt{max\_depth} and \texttt{min\_child\_weight},
+    \item \texttt{subsample} and \texttt{colsample\_bytree},
+    \item \texttt{learning\_rate} and \texttt{n\_estimators}.
+\end{enumerate}
+This improved the accuracy by 2\%.
+
+\subsection{Results and Comparison}
+The model accuracies are compared in Table \ref{tab:acc}. As you can see, the XGBoost model trained
+on the FastText embeddings worked best. However, it only translated the performance from the
+cross-validation to the never-before-seen test set when we subtracted the mean word embedding of the
+matches. The LLM model completely overfit the classification training data (instead of sentiment
+analysis, it seems to have memorized the dataset). The word frequency model performed poorly, as it
+was too simplistic. The graph-of-words model did not perform well either, which may be due to
+implementation errors.
+
+\begin{table*}[htb!]
+    \centering
+    \caption{Accuracy comparison for different models.}
+    \label{tab:acc}
+    \begin{tabular}{|c|c|c|}
+        \hline
+        Model & Cross-validation accuracy & Test accuracy \\ \hline
+        XGBoost on FastText, Match Mean Subtracted & 0.76472 & 0.73046 \\ \hline
+        XGBoost on FastText, No Subtraction & 0.73351 & 0.68750 \\ \hline
+        XGBoost on GloVe, Match Mean Subtracted & 0.73512 & \textbf{0.74218} \\ \hline
+        DistilBERT & 0.90189 & 0.60156 \\ \hline
+        Word frequencies, word-level & 0.66213 & 0.62109 \\ \hline
+        Word frequencies, tweet-level & 0.61722 & 0.56640 \\ \hline
+        Graph-of-words & 0.65342 & 0.62890 \\ \hline
+    \end{tabular}
+\end{table*}
+
+We conclude that in this task, the most important step was to remove match biases. Other steps, such
+as including tweet frequency or the embeddings of the previous and next time periods did not help as
+much. The LLM could not be trained in a way to avoid overfitting, as it is not well suited for this
+type of task (``custom'' sentiments instead of real-life sentiments).
+\bibliographystyle{plain}
+\bibliography{ref}
+\end{document}
